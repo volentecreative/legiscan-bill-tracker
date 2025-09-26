@@ -21,6 +21,9 @@ export default async function handler(req, res) {
     const toPublish = [];
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+    // Session status cache for dynamic session detection
+    const sessionStatusCache = new Map();
+
     // --- Fetch collection schema and build option maps dynamically
     async function getOptionIdMaps() {
       const u = `https://api.webflow.com/v2/collections/${COLLECTION_ID}`;
@@ -57,22 +60,196 @@ export default async function handler(req, res) {
       "87a300e03b5ad785b240294477aaaf35": "US", // Federal
     };
 
-    // --- Helpers ------------------------------------------------------------
-    function computeStatusKey(billInfo, { state, legislativeYear }) {
+    // --- Enhanced Status Detection Functions -----------------------------------
+
+    // New function to check if session has ended using LegiScan data
+    async function isSessionEnded(state, legislativeYear) {
+      const cacheKey = `${state}-${legislativeYear}`;
+      
+      // Return cached result if available
+      if (sessionStatusCache.has(cacheKey)) {
+        return sessionStatusCache.get(cacheKey);
+      }
+
+      try {
+        // Get session list for the state
+        const sessionUrl = `https://api.legiscan.com/?key=${encodeURIComponent(LEGISCAN_API_KEY)}&op=getSessionList&state=${encodeURIComponent(state)}`;
+        const response = await fetch(sessionUrl);
+        const data = await response.json();
+        
+        if (data.status !== "OK" || !data.sessions) {
+          // Fallback to original date-based logic for MN
+          if (state === "MN" && legislativeYear) {
+            const year = Number(legislativeYear);
+            const cutoff = new Date(year, 5, 1); // June 1
+            const ended = new Date() >= cutoff;
+            sessionStatusCache.set(cacheKey, ended);
+            return ended;
+          }
+          return false;
+        }
+
+        // Find the session for the specified year
+        const targetSession = data.sessions.find(session => {
+          const yearStart = session.year_start;
+          const yearEnd = session.year_end;
+          const year = Number(legislativeYear);
+          
+          // Handle both single-year and multi-year sessions
+          return year >= yearStart && year <= yearEnd;
+        });
+
+        if (!targetSession) {
+          // No session found for this year - assume ended
+          sessionStatusCache.set(cacheKey, true);
+          return true;
+        }
+
+        // Check session status flags
+        const ended = targetSession.sine_die === 1 || targetSession.prior === 1;
+        
+        // Cache the result to avoid repeated API calls
+        sessionStatusCache.set(cacheKey, ended);
+        
+        return ended;
+      } catch (error) {
+        console.warn(`Failed to get session status for ${state}-${legislativeYear}:`, error);
+        
+        // Fallback to original date-based logic for MN
+        if (state === "MN" && legislativeYear) {
+          const year = Number(legislativeYear);
+          const cutoff = new Date(year, 5, 1); // June 1
+          const ended = new Date() >= cutoff;
+          sessionStatusCache.set(cacheKey, ended);
+          return ended;
+        }
+        
+        return false;
+      }
+    }
+
+    function getStatusFromTimeline(billInfo) {
+      const hist = Array.isArray(billInfo?.history) ? [...billInfo.history] : [];
+      if (!hist.length) {
+        const lastAction = (billInfo?.last_action || "").toLowerCase();
+        return analyzeActionText(lastAction);
+      }
+
+      hist.sort((a, b) => new Date(b.date || b.action_date || 0) - new Date(a.date || a.action_date || 0));
+      const recentEntries = hist.slice(0, 5);
+      
+      for (const entry of recentEntries) {
+        const action = (entry.action || "").toLowerCase();
+        const status = analyzeActionText(action);
+        if (status) {
+          return status;
+        }
+      }
+
+      return null;
+    }
+
+    function analyzeActionText(actionText) {
+      if (!actionText) return null;
+      
+      const text = actionText.toLowerCase();
+      
+      // Failed/Defeated patterns (most specific first)
+      const failedPatterns = [
+        /bill was not passed/,
+        /motion.*failed/,
+        /failed/,
+        /defeated/,
+        /rejected/,
+        /killed/,
+        /motion.*not agreed to/,
+        /amendment.*not agreed to/,
+        /vote.*failed/,
+        /motion.*lost/,
+        /do not pass/,
+        /inexpedient/
+      ];
+      
+      for (const pattern of failedPatterns) {
+        if (pattern.test(text)) {
+          return "Failed";
+        }
+      }
+      
+      // Passed patterns
+      const passedPatterns = [
+        /bill passed/,
+        /passed/,
+        /enacted/,
+        /signed.*governor/,
+        /signed.*president/,
+        /approved/,
+        /adopted/,
+        /concurred/,
+        /motion.*agreed to/,
+        /vote.*passed/,
+        /do pass/
+      ];
+      
+      for (const pattern of passedPatterns) {
+        if (pattern.test(text)) {
+          return "Passed";
+        }
+      }
+      
+      // Tabled/Postponed patterns
+      const tabledPatterns = [
+        /tabled/,
+        /laid on the? table/,
+        /postponed/,
+        /indefinitely postponed/,
+        /sine die/,
+        /died/,
+        /withdrawn/,
+        /stricken/,
+        /held.*committee/,
+        /laid over/,
+        /laid on.*desk/
+      ];
+      
+      for (const pattern of tabledPatterns) {
+        if (pattern.test(text)) {
+          return "Tabled";
+        }
+      }
+      
+      return null;
+    }
+
+    // Enhanced status computation with timeline analysis and dynamic session detection
+    async function computeStatusKey(billInfo, { state, legislativeYear }) {
       const code = billInfo.status;
+      
+      // First check definitive status codes
       if (code === 4) return "Passed";
       if (code === 5 || code === 6) return "Failed";
 
-      const year = Number(legislativeYear);
-      const cutoff = state === "MN" && year ? new Date(year, 5, 1) : null; // Jun 1
+      // Then try to determine status from timeline/history entries
+      const timelineStatus = getStatusFromTimeline(billInfo);
+      if (timelineStatus) {
+        return timelineStatus;
+      }
+
+      // Use dynamic session status instead of hard-coded cutoff
+      const sessionEnded = await isSessionEnded(state, legislativeYear);
+      if (sessionEnded && (code === 1 || code === 2 || code === 3)) {
+        return "Tabled";
+      }
+
+      // Check last_action for dead bill indicators
       const la = (billInfo.last_action || "").toLowerCase();
       const looksDead = /tabled|laid on the? table|postponed|indefinitely|sine die|died|withdrawn|stricken/.test(la);
-
       if (looksDead) return "Tabled";
-      if (cutoff && new Date() >= cutoff && (code === 1 || code === 2 || code === 3)) return "Tabled";
+
       return "Active";
     }
 
+    // --- Helpers ------------------------------------------------------------
     const isPlaceholderName = (name, billNum) => {
       const n = (name || "").trim();
       return !n
@@ -328,13 +505,13 @@ export default async function handler(req, res) {
           updateData.fieldData["name"] = billTitle;
         }
 
-        // Status (separate)
+        // Status (separate) - now using enhanced detection with timeline analysis and dynamic session status
         if (houseNumber && houseInfo) {
-          const statusKey = computeStatusKey(houseInfo, { state, legislativeYear });
+          const statusKey = await computeStatusKey(houseInfo, { state, legislativeYear });
           updateData.fieldData["house-file-status"] = houseStatusIds[statusKey];
         }
         if (senateNumber && senateInfo) {
-          const statusKey = computeStatusKey(senateInfo, { state, legislativeYear });
+          const statusKey = await computeStatusKey(senateInfo, { state, legislativeYear });
           updateData.fieldData["senate-file-status"] = senateStatusIds[statusKey];
         }
 
@@ -357,8 +534,6 @@ export default async function handler(req, res) {
 
         // Write ALL sponsor fields - combined and chamber-specific
         updateData.fieldData["sponsors"] = sponsorsHtml || "";
-        
-        // FIXED: Actually write the chamber-specific sponsor fields!
         updateData.fieldData["house-file-sponsors"] = houseNumber ? (houseSponsorsHtml || "") : null;
         updateData.fieldData["senate-file-sponsors"] = senateNumber ? (senateSponsorsHtml || "") : null;
 
@@ -407,9 +582,9 @@ export default async function handler(req, res) {
 
         toPublish.push(bill.id);
 
-        // Log-friendly summary
-        const houseStatusText = houseNumber ? computeStatusKey(houseInfo, { state, legislativeYear }) : null;
-        const senateStatusText = senateNumber ? computeStatusKey(senateInfo, { state, legislativeYear }) : null;
+        // Log-friendly summary (now with enhanced status detection)
+        const houseStatusText = houseNumber ? await computeStatusKey(houseInfo, { state, legislativeYear }) : null;
+        const senateStatusText = senateNumber ? await computeStatusKey(senateInfo, { state, legislativeYear }) : null;
 
         results.updated++;
         results.bills.push({
