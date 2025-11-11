@@ -48,10 +48,33 @@ export default async function handler(req, res) {
       }
 
       return {
+        bySlug,
         houseStatusIds: makeMap("house-file-status", ["Active","Tabled","Failed","Passed"]),
         senateStatusIds: makeMap("senate-file-status", ["Active","Tabled","Failed","Passed"]),
-        jurisdictionIds: makeMap("jurisdiction", ["Minnesota","Federal"]), // not used below
+        jurisdictionIds: (() => { try { return makeMap("jurisdiction", ["Minnesota","Federal"]); } catch { return {}; } })(),
       };
+    }
+
+    // Coerce/strip fields not present in the schema to prevent 400s
+    function cleanFieldData(fieldData, bySlug) {
+      const out = {};
+      const dropped = [];
+      for (const [k, v] of Object.entries(fieldData || {})) {
+        const def = bySlug[k];
+        if (!def) { dropped.push(k); continue; }
+
+        // Webflow v2: for text/richtext/link-like fields use empty string to clear
+        if (v == null) {
+          if (["PlainText","RichText","Link","Email","Phone","Url","Number","Color"].includes(def.type)) {
+            out[k] = "";
+          } else {
+            out[k] = null; // allowed for e.g. References, Images, Options, etc.
+          }
+        } else {
+          out[k] = v;
+        }
+      }
+      return { cleaned: out, dropped };
     }
 
     // --- Webflow Option IDs (Jurisdiction) - static → state code
@@ -439,7 +462,7 @@ export default async function handler(req, res) {
     const bills = (await listRes.json()).items || [];
 
     // Get dynamic option ID mappings from schema
-    const { houseStatusIds, senateStatusIds /*, jurisdictionIds*/ } = await getOptionIdMaps();
+    const { bySlug, houseStatusIds, senateStatusIds } = await getOptionIdMaps();
 
     // --- Process items ------------------------------------------------------
     for (const bill of bills) {
@@ -560,13 +583,23 @@ export default async function handler(req, res) {
           updateData.slug = structuredSlug;
         }
 
-        if (!Object.keys(updateData.fieldData).length && !updateData.slug) {
+        // Clean fieldData to only include fields that exist in schema
+        const { cleaned, dropped } = cleanFieldData(updateData.fieldData, bySlug);
+        if (dropped.length) {
+          results.skipReasons.push({ id: bill.id, reason: `Dropped unknown fields: ${dropped.join(", ")}` });
+        }
+
+        if (!Object.keys(cleaned).length && !updateData.slug) {
           results.skipped++;
           results.skipReasons.push({ id: bill.id, reason: "No changes to apply" });
           continue;
         }
 
-        const staging = await patchStaging(bill.id, updateData);
+        const staging = await patchStaging(bill.id, { 
+          fieldData: cleaned, 
+          ...(updateData.slug ? { slug: updateData.slug } : {}) 
+        });
+
         if (!staging.ok) {
           const body = await staging.json().catch(() => ({}));
           results.errors.push({
@@ -575,7 +608,7 @@ export default async function handler(req, res) {
             status: staging.status,
             message: body.message || staging.statusText,
             details: body.details || body,
-            sentData: updateData
+            sentData: { fieldData: cleaned, slug: updateData.slug }
           });
           continue;
         }
@@ -602,6 +635,7 @@ export default async function handler(req, res) {
           sponsorsPreview: sponsorsHtml ? "Sponsors generated" : "No sponsors",
           houseSponsorsPreview: houseSponsorsHtml ? "House sponsors generated" : "No house sponsors",
           senateSponsorsPreview: senateSponsorsHtml ? "Senate sponsors generated" : "No senate sponsors",
+          droppedFields: dropped.length ? dropped : undefined,
         });
 
         await sleep(120);
