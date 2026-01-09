@@ -88,7 +88,9 @@ module.exports = async function handler(req, res) {
       skipReasons: [],
       errors: [],
       bills: [],
-      apiCalls: 0 // Track LegiScan API usage
+      apiCalls: 0, // Track LegiScan API usage
+      sessionInfo: {}, // Track session detection results
+      billStatusDecisions: [] // Track why each bill got its status
     };
     const toPublish = [];
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -173,7 +175,10 @@ module.exports = async function handler(req, res) {
       // If no legislative year provided, we can't determine session status
       if (!legislativeYear) {
         console.warn(`⚠️ No legislative year for ${state}, cannot determine session status`);
-        // Conservative: assume not ended if we can't tell
+        results.sessionInfo[cacheKey] = {
+          error: "No legislative year provided",
+          assumed: "not ended (conservative)"
+        };
         sessionStatusCache.set(cacheKey, false);
         return false;
       }
@@ -186,6 +191,10 @@ module.exports = async function handler(req, res) {
         
         if (data.status !== "OK" || !data.sessions) {
           console.error(`❌ LegiScan session check failed for ${state}`);
+          results.sessionInfo[cacheKey] = {
+            error: `LegiScan API returned status: ${data.status || 'unknown'}`,
+            assumed: "not ended (conservative)"
+          };
           sessionStatusCache.set(cacheKey, false);
           return false;
         }
@@ -200,29 +209,52 @@ module.exports = async function handler(req, res) {
 
         if (matchingSessions.length === 0) {
           console.warn(`⚠️ No session found for ${state}-${legislativeYear}, assuming ended`);
+          results.sessionInfo[cacheKey] = {
+            found: 0,
+            sessions: [],
+            assumed: "ended (no matching session found)"
+          };
           sessionStatusCache.set(cacheKey, true);
           return true;
         }
 
         // Check if ALL matching sessions have ended
         // (both regular and special sessions must be done)
-        const allEnded = matchingSessions.every(session => 
-          session.sine_die === 1 || session.prior === 1
-        );
+        const sessionDetails = matchingSessions.map(session => ({
+          name: session.session_name,
+          session_id: session.session_id,
+          year_start: session.year_start,
+          year_end: session.year_end,
+          sine_die: session.sine_die,
+          prior: session.prior,
+          ended: session.sine_die === 1 || session.prior === 1
+        }));
+
+        const allEnded = sessionDetails.every(s => s.ended);
         
         // Log what we found
         console.log(`📋 ${state}-${legislativeYear} sessions:`);
-        matchingSessions.forEach(session => {
-          const ended = session.sine_die === 1 || session.prior === 1;
-          console.log(`  → ${session.session_name}: ${ended ? 'ENDED ✓' : 'ACTIVE ⚡'} (sine_die=${session.sine_die}, prior=${session.prior})`);
+        sessionDetails.forEach(session => {
+          console.log(`  → ${session.name}: ${session.ended ? 'ENDED ✓' : 'ACTIVE ⚡'} (sine_die=${session.sine_die}, prior=${session.prior})`);
         });
         console.log(`  → Overall status: ${allEnded ? 'ALL ENDED' : 'STILL ACTIVE'}`);
+        
+        // Save detailed info to results
+        results.sessionInfo[cacheKey] = {
+          found: matchingSessions.length,
+          sessions: sessionDetails,
+          allEnded: allEnded,
+          decision: allEnded ? "All sessions ended - bills will be marked Tabled" : "At least one session active - bills stay Active"
+        };
         
         sessionStatusCache.set(cacheKey, allEnded);
         return allEnded;
       } catch (error) {
         console.error(`❌ Error checking session status for ${state}-${legislativeYear}:`, error.message);
-        // Conservative: assume not ended on error
+        results.sessionInfo[cacheKey] = {
+          error: error.message,
+          assumed: "not ended (conservative fallback)"
+        };
         sessionStatusCache.set(cacheKey, false);
         return false;
       }
@@ -326,27 +358,49 @@ module.exports = async function handler(req, res) {
       const code = billInfo.status;
       const billNum = billInfo.bill_number;
       
+      const decision = {
+        billNumber: billNum,
+        statusCode: code,
+        legislativeYear: legislativeYear,
+        finalStatus: null,
+        reason: null
+      };
+      
       // First check definitive status codes
       if (code === 4) {
+        decision.finalStatus = "Passed";
+        decision.reason = "Status code 4 (definitively passed)";
         console.log(`  ${billNum}: Status code 4 → PASSED`);
+        results.billStatusDecisions.push(decision);
         return "Passed";
       }
       if (code === 5 || code === 6) {
+        decision.finalStatus = "Failed";
+        decision.reason = `Status code ${code} (definitively failed)`;
         console.log(`  ${billNum}: Status code ${code} → FAILED`);
+        results.billStatusDecisions.push(decision);
         return "Failed";
       }
 
       // Then try to determine status from timeline/history entries
       const timelineStatus = getStatusFromTimeline(billInfo);
       if (timelineStatus) {
+        decision.finalStatus = timelineStatus;
+        decision.reason = "Detected from timeline/action history";
+        decision.lastAction = billInfo?.last_action;
         console.log(`  ${billNum}: Timeline analysis → ${timelineStatus.toUpperCase()}`);
+        results.billStatusDecisions.push(decision);
         return timelineStatus;
       }
 
       // Use dynamic session status instead of hard-coded cutoff
       const sessionEnded = await isSessionEnded(state, legislativeYear);
       if (sessionEnded && (code === 1 || code === 2 || code === 3)) {
+        decision.finalStatus = "Tabled";
+        decision.reason = `Status code ${code} + session ended`;
+        decision.sessionEnded = true;
         console.log(`  ${billNum}: Status code ${code} + session ended → TABLED`);
+        results.billStatusDecisions.push(decision);
         return "Tabled";
       }
 
@@ -354,11 +408,19 @@ module.exports = async function handler(req, res) {
       const la = (billInfo?.last_action || "").toLowerCase();
       const looksDead = /tabled|laid on the? table|postponed|indefinitely|sine die|died|withdrawn|stricken/.test(la);
       if (looksDead) {
+        decision.finalStatus = "Tabled";
+        decision.reason = "Last action indicates tabled";
+        decision.lastAction = billInfo?.last_action;
         console.log(`  ${billNum}: Last action "${billInfo?.last_action}" → TABLED`);
+        results.billStatusDecisions.push(decision);
         return "Tabled";
       }
 
+      decision.finalStatus = "Active";
+      decision.reason = `Status code ${code} + session ${sessionEnded ? 'ended but no dead indicators' : 'still active'}`;
+      decision.sessionEnded = sessionEnded;
       console.log(`  ${billNum}: Status code ${code} + session ${sessionEnded ? 'ended' : 'active'} → ACTIVE`);
+      results.billStatusDecisions.push(decision);
       return "Active";
     }
 
@@ -797,6 +859,8 @@ module.exports = async function handler(req, res) {
         errors: results.errors.length,
         apiCalls: results.apiCalls
       },
+      sessionInfo: results.sessionInfo,
+      billStatusDecisions: results.billStatusDecisions,
       updatedBills: results.bills,
       skipReasons: results.skipReasons.length ? results.skipReasons : undefined,
       errors: results.errors.length ? results.errors : undefined,
