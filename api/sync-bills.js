@@ -53,8 +53,12 @@ module.exports = async function handler(req, res) {
     const webhookItemId = req.body?._id || req.body?.itemId || req.query?.itemId;
     const isWebhookCall = !!webhookItemId;
     
-    // For manual/non-webhook calls, require authentication
-    if (!isWebhookCall) {
+    // Check if this is a Vercel cron job
+    const authHeader = req.headers.authorization;
+    const isCronJob = authHeader === `Bearer ${process.env.CRON_SECRET}`;
+    
+    // For manual calls (not webhook, not cron), require authentication
+    if (!isWebhookCall && !isCronJob) {
       const authCheck = verifySession(req);
       if (!authCheck.valid) {
         return res.status(401).json({ 
@@ -76,19 +80,26 @@ module.exports = async function handler(req, res) {
     const results = {
       timestamp: new Date().toISOString(),
       webhookMode: !!webhookItemId,
+      cronMode: isCronJob,
       targetItemId: webhookItemId || null,
       processed: 0,
       updated: 0,
       skipped: 0,
       skipReasons: [],
       errors: [],
-      bills: []
+      bills: [],
+      apiCalls: 0 // Track LegiScan API usage
     };
     const toPublish = [];
     const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
     // Session status cache for dynamic session detection
     const sessionStatusCache = new Map();
+
+    // Helper to track API calls
+    function trackApiCall() {
+      results.apiCalls++;
+    }
 
     // --- Fetch collection schema and build option maps dynamically
     async function getOptionIdMaps() {
@@ -151,68 +162,68 @@ module.exports = async function handler(req, res) {
 
     // --- Enhanced Status Detection Functions -----------------------------------
 
-    // New function to check if session has ended using LegiScan data
+    // Improved: Works for both regular and special sessions
     async function isSessionEnded(state, legislativeYear) {
       const cacheKey = `${state}-${legislativeYear}`;
       
-      // Return cached result if available
       if (sessionStatusCache.has(cacheKey)) {
         return sessionStatusCache.get(cacheKey);
       }
 
+      // If no legislative year provided, we can't determine session status
+      if (!legislativeYear) {
+        console.warn(`⚠️ No legislative year for ${state}, cannot determine session status`);
+        // Conservative: assume not ended if we can't tell
+        sessionStatusCache.set(cacheKey, false);
+        return false;
+      }
+
       try {
-        // Get session list for the state
+        trackApiCall();
         const sessionUrl = `https://api.legiscan.com/?key=${encodeURIComponent(LEGISCAN_API_KEY)}&op=getSessionList&state=${encodeURIComponent(state)}`;
         const response = await fetch(sessionUrl);
         const data = await response.json();
         
         if (data.status !== "OK" || !data.sessions) {
-          // Fallback to original date-based logic for MN
-          if (state === "MN" && legislativeYear) {
-            const year = Number(legislativeYear);
-            const cutoff = new Date(year, 5, 1); // June 1
-            const ended = new Date() >= cutoff;
-            sessionStatusCache.set(cacheKey, ended);
-            return ended;
-          }
+          console.error(`❌ LegiScan session check failed for ${state}`);
+          sessionStatusCache.set(cacheKey, false);
           return false;
         }
 
-        // Find the session for the specified year
-        const targetSession = data.sessions.find(session => {
+        // Find ALL sessions that overlap with this year (includes special sessions)
+        const year = Number(legislativeYear);
+        const matchingSessions = data.sessions.filter(session => {
           const yearStart = session.year_start;
           const yearEnd = session.year_end;
-          const year = Number(legislativeYear);
-          
-          // Handle both single-year and multi-year sessions
           return year >= yearStart && year <= yearEnd;
         });
 
-        if (!targetSession) {
-          // No session found for this year - assume ended
+        if (matchingSessions.length === 0) {
+          console.warn(`⚠️ No session found for ${state}-${legislativeYear}, assuming ended`);
           sessionStatusCache.set(cacheKey, true);
           return true;
         }
 
-        // Check session status flags
-        const ended = targetSession.sine_die === 1 || targetSession.prior === 1;
+        // Check if ALL matching sessions have ended
+        // (both regular and special sessions must be done)
+        const allEnded = matchingSessions.every(session => 
+          session.sine_die === 1 || session.prior === 1
+        );
         
-        // Cache the result to avoid repeated API calls
-        sessionStatusCache.set(cacheKey, ended);
+        // Log what we found
+        console.log(`📋 ${state}-${legislativeYear} sessions:`);
+        matchingSessions.forEach(session => {
+          const ended = session.sine_die === 1 || session.prior === 1;
+          console.log(`  → ${session.session_name}: ${ended ? 'ENDED ✓' : 'ACTIVE ⚡'} (sine_die=${session.sine_die}, prior=${session.prior})`);
+        });
+        console.log(`  → Overall status: ${allEnded ? 'ALL ENDED' : 'STILL ACTIVE'}`);
         
-        return ended;
+        sessionStatusCache.set(cacheKey, allEnded);
+        return allEnded;
       } catch (error) {
-        console.warn(`Failed to get session status for ${state}-${legislativeYear}:`, error);
-        
-        // Fallback to original date-based logic for MN
-        if (state === "MN" && legislativeYear) {
-          const year = Number(legislativeYear);
-          const cutoff = new Date(year, 5, 1); // June 1
-          const ended = new Date() >= cutoff;
-          sessionStatusCache.set(cacheKey, ended);
-          return ended;
-        }
-        
+        console.error(`❌ Error checking session status for ${state}-${legislativeYear}:`, error.message);
+        // Conservative: assume not ended on error
+        sessionStatusCache.set(cacheKey, false);
         return false;
       }
     }
@@ -313,28 +324,41 @@ module.exports = async function handler(req, res) {
     // Enhanced status computation with timeline analysis and dynamic session detection
     async function computeStatusKey(billInfo, { state, legislativeYear }) {
       const code = billInfo.status;
+      const billNum = billInfo.bill_number;
       
       // First check definitive status codes
-      if (code === 4) return "Passed";
-      if (code === 5 || code === 6) return "Failed";
+      if (code === 4) {
+        console.log(`  ${billNum}: Status code 4 → PASSED`);
+        return "Passed";
+      }
+      if (code === 5 || code === 6) {
+        console.log(`  ${billNum}: Status code ${code} → FAILED`);
+        return "Failed";
+      }
 
       // Then try to determine status from timeline/history entries
       const timelineStatus = getStatusFromTimeline(billInfo);
       if (timelineStatus) {
+        console.log(`  ${billNum}: Timeline analysis → ${timelineStatus.toUpperCase()}`);
         return timelineStatus;
       }
 
       // Use dynamic session status instead of hard-coded cutoff
       const sessionEnded = await isSessionEnded(state, legislativeYear);
       if (sessionEnded && (code === 1 || code === 2 || code === 3)) {
+        console.log(`  ${billNum}: Status code ${code} + session ended → TABLED`);
         return "Tabled";
       }
 
       // Check last_action for dead bill indicators
       const la = (billInfo?.last_action || "").toLowerCase();
       const looksDead = /tabled|laid on the? table|postponed|indefinitely|sine die|died|withdrawn|stricken/.test(la);
-      if (looksDead) return "Tabled";
+      if (looksDead) {
+        console.log(`  ${billNum}: Last action "${billInfo?.last_action}" → TABLED`);
+        return "Tabled";
+      }
 
+      console.log(`  ${billNum}: Status code ${code} + session ${sessionEnded ? 'ended' : 'active'} → ACTIVE`);
       return "Active";
     }
 
@@ -357,6 +381,7 @@ module.exports = async function handler(req, res) {
     }
 
     async function fetchLegiScanBill({ state, billNumber, year }) {
+      trackApiCall(); // Track this API call
       let searchNumber = billNumber;
 
       if (state === "US") {
@@ -761,6 +786,7 @@ module.exports = async function handler(req, res) {
       success: true,
       timestamp: results.timestamp,
       webhookMode: results.webhookMode,
+      cronMode: results.cronMode,
       targetItemId: results.targetItemId,
       summary: {
         totalBills: bills.length,
@@ -768,7 +794,8 @@ module.exports = async function handler(req, res) {
         updated: results.updated,
         skipped: results.skipped,
         published: publishedOk,
-        errors: results.errors.length
+        errors: results.errors.length,
+        apiCalls: results.apiCalls
       },
       updatedBills: results.bills,
       skipReasons: results.skipReasons.length ? results.skipReasons : undefined,
