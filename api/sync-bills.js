@@ -9,8 +9,13 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: "Missing environment variables" });
     }
 
+    // Check if this is a webhook call with a specific item
+    const webhookItemId = req.body?._id || req.body?.itemId || req.query?.itemId;
+
     const results = {
       timestamp: new Date().toISOString(),
+      webhookMode: !!webhookItemId,
+      targetItemId: webhookItemId || null,
       processed: 0,
       updated: 0,
       skipped: 0,
@@ -265,7 +270,7 @@ export default async function handler(req, res) {
       }
 
       // Check last_action for dead bill indicators
-      const la = (billInfo.last_action || "").toLowerCase();
+      const la = (billInfo?.last_action || "").toLowerCase();
       const looksDead = /tabled|laid on the? table|postponed|indefinitely|sine die|died|withdrawn|stricken/.test(la);
       if (looksDead) return "Tabled";
 
@@ -455,11 +460,31 @@ export default async function handler(req, res) {
     }
 
     // --- Fetch items --------------------------------------------------------
-    const listRes = await fetch(`https://api.webflow.com/v2/collections/${COLLECTION_ID}/items`, {
-      headers: { Authorization: `Bearer ${WEBFLOW_TOKEN}` },
-    });
-    if (!listRes.ok) throw new Error(`Webflow API error: ${listRes.status}`);
-    const bills = (await listRes.json()).items || [];
+    let bills = [];
+    
+    if (webhookItemId) {
+      // Webhook mode: fetch single item
+      try {
+        const itemRes = await fetch(`https://api.webflow.com/v2/collections/${COLLECTION_ID}/items/${webhookItemId}`, {
+          headers: { Authorization: `Bearer ${WEBFLOW_TOKEN}` },
+        });
+        if (!itemRes.ok) throw new Error(`Webflow API error fetching item: ${itemRes.status}`);
+        bills = [await itemRes.json()];
+      } catch (err) {
+        return res.status(500).json({ 
+          success: false, 
+          error: `Failed to fetch webhook item: ${err.message}`,
+          webhookItemId 
+        });
+      }
+    } else {
+      // Manual/cron mode: fetch all items
+      const listRes = await fetch(`https://api.webflow.com/v2/collections/${COLLECTION_ID}/items`, {
+        headers: { Authorization: `Bearer ${WEBFLOW_TOKEN}` },
+      });
+      if (!listRes.ok) throw new Error(`Webflow API error: ${listRes.status}`);
+      bills = (await listRes.json()).items || [];
+    }
 
     // Get dynamic option ID mappings from schema
     const { bySlug, houseStatusIds, senateStatusIds } = await getOptionIdMaps();
@@ -674,6 +699,8 @@ export default async function handler(req, res) {
     return res.status(200).json({
       success: true,
       timestamp: results.timestamp,
+      webhookMode: results.webhookMode,
+      targetItemId: results.targetItemId,
       summary: {
         totalBills: bills.length,
         processed: results.processed,
