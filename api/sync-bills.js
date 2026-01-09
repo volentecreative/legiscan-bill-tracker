@@ -1,5 +1,51 @@
 // /api/sync-bills.js
-const { verifySession } = require('./auth.js');
+const crypto = require('crypto');
+
+// Session verification (duplicated from auth.js to avoid import issues)
+function verifySessionToken(token, password) {
+  try {
+    const [dataBase64, signature] = token.split('.');
+    if (!dataBase64 || !signature) return { valid: false };
+    
+    const data = Buffer.from(dataBase64, 'base64').toString('utf8');
+    
+    // Verify signature
+    const hmac = crypto.createHmac('sha256', password);
+    hmac.update(data);
+    const expectedSignature = hmac.digest('hex');
+    
+    if (signature !== expectedSignature) {
+      return { valid: false, error: 'Invalid signature' };
+    }
+    
+    // Check expiry
+    const parsed = JSON.parse(data);
+    if (Date.now() > parsed.exp) {
+      return { valid: false, error: 'Session expired' };
+    }
+    
+    return { valid: true };
+  } catch (error) {
+    return { valid: false, error: 'Invalid token format' };
+  }
+}
+
+function verifySession(req) {
+  const validPassword = process.env.DASHBOARD_PASSWORD;
+  
+  if (!validPassword) {
+    return { valid: false, error: 'Server configuration error' };
+  }
+  
+  const cookies = req.headers.cookie || '';
+  const sessionMatch = cookies.match(/session=([^;]+)/);
+  
+  if (!sessionMatch) {
+    return { valid: false, error: 'No session cookie' };
+  }
+  
+  return verifySessionToken(sessionMatch[1], validPassword);
+}
 
 module.exports = async function handler(req, res) {
   try {
@@ -26,9 +72,6 @@ module.exports = async function handler(req, res) {
     if (!WEBFLOW_TOKEN || !LEGISCAN_API_KEY || !COLLECTION_ID) {
       return res.status(400).json({ success: false, error: "Missing environment variables" });
     }
-
-    // Check if this is a webhook call with a specific item
-    const webhookItemId = req.body?._id || req.body?.itemId || req.query?.itemId;
 
     const results = {
       timestamp: new Date().toISOString(),
