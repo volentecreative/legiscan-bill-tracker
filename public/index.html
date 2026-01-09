@@ -278,16 +278,17 @@
       <button onclick="runSync()" id="syncBtn">🔄 Run Full Sync</button>
       <button onclick="clearResults()" class="secondary">🗑️ Clear Results</button>
       <button onclick="clearLogs()" class="danger">🗑️ Clear All Logs</button>
+      <button onclick="logout()" class="secondary">🚪 Logout</button>
       <p class="timestamp" id="lastRun"></p>
     </div>
 
     <div class="card">
       <div class="tabs">
-        <button class="tab active" onclick="switchTab('overview')">Overview</button>
-        <button class="tab" onclick="switchTab('bills')">Bill Details</button>
-        <button class="tab" onclick="switchTab('errors')">Errors</button>
-        <button class="tab" onclick="switchTab('webhooks')">Webhook Log</button>
-        <button class="tab" onclick="switchTab('raw')">Raw JSON</button>
+        <button class="tab active" onclick="switchTab(event, 'overview')">Overview</button>
+        <button class="tab" onclick="switchTab(event, 'bills')">Bill Details</button>
+        <button class="tab" onclick="switchTab(event, 'errors')">Errors</button>
+        <button class="tab" onclick="switchTab(event, 'webhooks')">Webhook Log</button>
+        <button class="tab" onclick="switchTab(event, 'raw')">Raw JSON</button>
       </div>
 
       <div id="overview" class="tab-content active">
@@ -324,15 +325,29 @@
     let allLogs = [];
     let isAuthenticated = false;
 
-    // Check if already authenticated
-    window.addEventListener('DOMContentLoaded', () => {
-      const authToken = sessionStorage.getItem('dashboardAuth');
-      if (authToken === 'authenticated') {
-        showDashboard();
-        loadSavedResults();
-        loadWebhookLogs();
-      }
+    // Check if already authenticated on page load
+    window.addEventListener('DOMContentLoaded', async () => {
+      await checkAuth();
     });
+
+    async function checkAuth() {
+      try {
+        const response = await fetch('/api/auth', {
+          method: 'GET',
+          credentials: 'include' // Important: include cookies
+        });
+        
+        const data = await response.json();
+        
+        if (data.authenticated) {
+          showDashboard();
+          loadSavedResults();
+          loadWebhookLogs();
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+      }
+    }
 
     async function login(event) {
       event.preventDefault();
@@ -349,18 +364,18 @@
         const response = await fetch('/api/auth', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'include', // Important: include cookies
           body: JSON.stringify({ password })
         });
         
         const data = await response.json();
         
         if (data.success) {
-          sessionStorage.setItem('dashboardAuth', 'authenticated');
           showDashboard();
           loadSavedResults();
           loadWebhookLogs();
         } else {
-          errorDiv.textContent = 'Incorrect password';
+          errorDiv.textContent = data.error || 'Incorrect password';
         }
       } catch (error) {
         errorDiv.textContent = 'Connection error. Please try again.';
@@ -371,13 +386,31 @@
       }
     }
 
+    async function logout() {
+      if (confirm('Log out of dashboard?')) {
+        try {
+          await fetch('/api/auth', {
+            method: 'DELETE',
+            credentials: 'include'
+          });
+          
+          // Hide dashboard and show login
+          document.getElementById('dashboard').classList.remove('visible');
+          document.getElementById('login-screen').classList.remove('hidden');
+          isAuthenticated = false;
+        } catch (error) {
+          console.error('Logout failed:', error);
+        }
+      }
+    }
+
     function showDashboard() {
       document.getElementById('login-screen').classList.add('hidden');
       document.getElementById('dashboard').classList.add('visible');
       isAuthenticated = true;
     }
 
-    function switchTab(tabName) {
+    function switchTab(event, tabName) {
       // Update tab buttons
       document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
       event.target.classList.add('active');
@@ -443,8 +476,18 @@
       try {
         const response = await fetch('/api/sync-bills', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include' // Important: include cookies for authentication
         });
+        
+        if (response.status === 401) {
+          status.innerHTML = '<p class="error">Session expired. Please log in again.</p>';
+          setTimeout(() => {
+            document.getElementById('dashboard').classList.remove('visible');
+            document.getElementById('login-screen').classList.remove('hidden');
+          }, 2000);
+          return;
+        }
         
         const data = await response.json();
         
