@@ -1,28 +1,7 @@
 // /api/sync-bills.js
+const { verifySession } = require('./auth.js');
 
-// Verify session helper (duplicated from auth.js to avoid import issues in Vercel)
-function verifySession(req) {
-  const cookies = req.headers.cookie || '';
-  const sessionMatch = cookies.match(/session=([^;]+)/);
-  
-  if (!sessionMatch) {
-    return { valid: false, error: 'No session cookie' };
-  }
-  
-  // Note: This assumes sessions Map is shared. In production, use Redis or database.
-  // For Vercel serverless, you'd need to use a persistent session store.
-  // For now, we'll accept webhook calls without auth, but require auth for manual calls
-  
-  const sessionToken = sessionMatch[1];
-  // Simple validation - in production this should check against a persistent store
-  if (sessionToken && sessionToken.length === 64) { // Valid format
-    return { valid: true };
-  }
-  
-  return { valid: false, error: 'Invalid session' };
-}
-
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   try {
     // Check if this is a webhook call (Webflow webhooks won't have session cookies)
     const webhookItemId = req.body?._id || req.body?.itemId || req.query?.itemId;
