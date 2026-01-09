@@ -287,7 +287,8 @@
         <button class="tab active" onclick="switchTab(event, 'overview')">Overview</button>
         <button class="tab" onclick="switchTab(event, 'bills')">Bill Details</button>
         <button class="tab" onclick="switchTab(event, 'errors')">Errors</button>
-        <button class="tab" onclick="switchTab(event, 'webhooks')">Webhook Log</button>
+        <button class="tab" onclick="switchTab(event, 'webhooks')">Activity Log</button>
+        <button class="tab" onclick="switchTab(event, 'debug')">Debug Info</button>
         <button class="tab" onclick="switchTab(event, 'raw')">Raw JSON</button>
       </div>
 
@@ -308,8 +309,15 @@
       </div>
 
       <div id="webhooks" class="tab-content">
-        <h3>Webhook Activity</h3>
+        <h3>Activity Log</h3>
         <div id="webhook-log"></div>
+      </div>
+
+      <div id="debug" class="tab-content">
+        <h3>Debug Information</h3>
+        <div id="debug-content">
+          <p class="empty-state">Run a sync to see debug information</p>
+        </div>
       </div>
 
       <div id="raw" class="tab-content">
@@ -447,7 +455,7 @@
     function saveLog(data) {
       const log = {
         timestamp: data.timestamp || new Date().toISOString(),
-        mode: data.webhookMode ? 'webhook' : 'manual',
+        mode: data.cronMode ? 'cron' : (data.webhookMode ? 'webhook' : 'manual'),
         success: data.success,
         summary: data.summary,
         targetItemId: data.targetItemId,
@@ -540,6 +548,9 @@
 
       // Display errors
       displayErrors(data.errors || [], data.skipReasons || []);
+
+      // Display debug info
+      displayDebugInfo(data);
 
       // Display full results
       results.textContent = JSON.stringify(data, null, 2);
@@ -648,11 +659,93 @@
       container.innerHTML = html;
     }
 
+    function displayDebugInfo(data) {
+      const container = document.getElementById('debug-content');
+      
+      if (!data.sessionInfo && !data.billStatusDecisions) {
+        container.innerHTML = '<div class="empty-state">No debug information available</div>';
+        return;
+      }
+
+      let html = '';
+
+      // Session Information
+      if (data.sessionInfo && Object.keys(data.sessionInfo).length > 0) {
+        html += '<div style="margin-bottom: 2rem;">';
+        html += '<h4 style="margin-bottom: 1rem;">📋 Session Status Detection</h4>';
+        
+        Object.entries(data.sessionInfo).forEach(([key, info]) => {
+          html += '<div style="background: #f8f9fa; padding: 1rem; border-radius: 6px; margin-bottom: 1rem; border-left: 4px solid #0070f3;">';
+          html += `<h5 style="margin: 0 0 0.5rem 0;">${key}</h5>`;
+          
+          if (info.error) {
+            html += `<p style="color: #e00; margin: 0.25rem 0;"><strong>❌ Error:</strong> ${info.error}</p>`;
+            html += `<p style="color: #666; margin: 0.25rem 0;">${info.assumed}</p>`;
+          } else if (info.sessions) {
+            html += `<p style="margin: 0.25rem 0;"><strong>Sessions Found:</strong> ${info.found}</p>`;
+            
+            info.sessions.forEach(session => {
+              const statusIcon = session.ended ? '✓' : '⚡';
+              const statusColor = session.ended ? '#0a0' : '#f90';
+              html += `<div style="margin: 0.5rem 0; padding: 0.5rem; background: white; border-radius: 4px;">`;
+              html += `<p style="margin: 0.25rem 0;"><strong style="color: ${statusColor};">${statusIcon} ${session.name}</strong></p>`;
+              html += `<p style="margin: 0.25rem 0; font-size: 0.875rem; color: #666;">`;
+              html += `Years: ${session.year_start}-${session.year_end} | `;
+              html += `sine_die=${session.sine_die} | prior=${session.prior}`;
+              html += `</p>`;
+              html += `</div>`;
+            });
+            
+            const decisionColor = info.allEnded ? '#0a0' : '#f90';
+            html += `<p style="margin-top: 0.75rem; padding: 0.5rem; background: white; border-radius: 4px; font-weight: 600; color: ${decisionColor};">`;
+            html += `${info.decision}`;
+            html += `</p>`;
+          }
+          
+          html += '</div>';
+        });
+        
+        html += '</div>';
+      }
+
+      // Bill Status Decisions
+      if (data.billStatusDecisions && data.billStatusDecisions.length > 0) {
+        html += '<div>';
+        html += '<h4 style="margin-bottom: 1rem;">🔍 Bill Status Decisions</h4>';
+        
+        data.billStatusDecisions.forEach(decision => {
+          const statusColors = {
+            'Passed': '#0a0',
+            'Failed': '#e00',
+            'Tabled': '#666',
+            'Active': '#0070f3'
+          };
+          const statusColor = statusColors[decision.finalStatus] || '#666';
+          
+          html += '<div style="background: #f8f9fa; padding: 1rem; border-radius: 6px; margin-bottom: 0.75rem;">';
+          html += `<p style="margin: 0 0 0.5rem 0;"><strong>${decision.billNumber}</strong>`;
+          html += ` → <strong style="color: ${statusColor};">${decision.finalStatus}</strong></p>`;
+          html += `<p style="margin: 0.25rem 0; font-size: 0.875rem; color: #666;">Status Code: ${decision.statusCode}</p>`;
+          html += `<p style="margin: 0.25rem 0; font-size: 0.875rem; color: #666;">Reason: ${decision.reason}</p>`;
+          
+          if (decision.lastAction) {
+            html += `<p style="margin: 0.25rem 0; font-size: 0.875rem; color: #666;">Last Action: "${decision.lastAction}"</p>`;
+          }
+          
+          html += '</div>';
+        });
+        
+        html += '</div>';
+      }
+
+      container.innerHTML = html || '<div class="empty-state">No debug information available</div>';
+    }
+
     function displayWebhookLogs() {
       const container = document.getElementById('webhook-log');
       
       if (allLogs.length === 0) {
-        container.innerHTML = '<div class="empty-state">No webhook activity yet</div>';
+        container.innerHTML = '<div class="empty-state">No activity yet</div>';
         return;
       }
 
@@ -663,10 +756,23 @@
         const statusText = log.success ? '✓ Success' : '✗ Failed';
         const modeClass = log.mode === 'webhook' ? 'webhook' : '';
         
+        // Determine icon and label based on mode
+        let modeIcon, modeLabel;
+        if (log.mode === 'webhook') {
+          modeIcon = '🔔';
+          modeLabel = 'Webhook';
+        } else if (log.mode === 'cron') {
+          modeIcon = '⏰';
+          modeLabel = 'Scheduled';
+        } else {
+          modeIcon = '🖱️';
+          modeLabel = 'Manual';
+        }
+        
         html += `<div class="log-entry">`;
         html += `<div class="log-time">${date.toLocaleString()}</div>`;
         html += `<div class="log-details">`;
-        html += `<div><strong>${log.mode === 'webhook' ? '🔔 Webhook' : '🖱️ Manual'}</strong></div>`;
+        html += `<div><strong>${modeIcon} ${modeLabel}</strong></div>`;
         
         if (log.summary) {
           html += `<div style="margin-top: 0.5rem; font-size: 0.875rem; color: #666;">`;
