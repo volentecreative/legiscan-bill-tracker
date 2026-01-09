@@ -1,8 +1,674 @@
 <!DOCTYPE html>
-<html>
-<head><title>LegiScan API</title></head>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LegiScan Bill Tracker Dashboard</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f5f5;
+      padding: 2rem;
+    }
+    .container { max-width: 1400px; margin: 0 auto; }
+    
+    #login-screen {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: #f5f5f5;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    #login-screen.hidden { display: none; }
+    
+    .login-box {
+      background: white;
+      padding: 2rem;
+      border-radius: 8px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      width: 100%;
+      max-width: 400px;
+    }
+    .login-box h2 { margin-bottom: 1.5rem; text-align: center; }
+    .login-box input {
+      width: 100%;
+      padding: 0.75rem;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      font-size: 1rem;
+      margin-bottom: 1rem;
+    }
+    .login-box input:focus {
+      outline: none;
+      border-color: #0070f3;
+    }
+    .login-box button {
+      width: 100%;
+      margin: 0;
+    }
+    .login-error {
+      color: #e00;
+      font-size: 0.875rem;
+      margin-top: 0.5rem;
+      text-align: center;
+    }
+    
+    #dashboard { display: none; }
+    #dashboard.visible { display: block; }
+    h1 { margin-bottom: 2rem; color: #333; }
+    h2 { margin-bottom: 1rem; color: #333; font-size: 1.25rem; }
+    h3 { margin-bottom: 0.75rem; color: #666; font-size: 1rem; }
+    
+    .card {
+      background: white;
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+    .stat {
+      background: white;
+      padding: 1.5rem;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    .stat-label { font-size: 0.875rem; color: #666; margin-bottom: 0.5rem; }
+    .stat-value { font-size: 2rem; font-weight: bold; color: #333; }
+    .stat.error .stat-value { color: #e00; }
+    .stat.success .stat-value { color: #0a0; }
+    
+    .tabs {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+      border-bottom: 2px solid #e0e0e0;
+    }
+    .tab {
+      background: none;
+      border: none;
+      padding: 0.75rem 1.5rem;
+      cursor: pointer;
+      font-size: 1rem;
+      color: #666;
+      border-bottom: 3px solid transparent;
+      margin-bottom: -2px;
+    }
+    .tab:hover { color: #333; background: #f5f5f5; }
+    .tab.active { color: #0070f3; border-bottom-color: #0070f3; font-weight: 500; }
+    
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    
+    button {
+      background: #0070f3;
+      color: white;
+      border: none;
+      padding: 0.75rem 1.5rem;
+      border-radius: 6px;
+      font-size: 1rem;
+      cursor: pointer;
+      margin-right: 1rem;
+      margin-bottom: 0.5rem;
+    }
+    button:hover { background: #0051cc; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    button.secondary { background: #666; }
+    button.secondary:hover { background: #444; }
+    button.danger { background: #e00; }
+    button.danger:hover { background: #c00; }
+    
+    pre {
+      background: #f5f5f5;
+      padding: 1rem;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 0.875rem;
+      max-height: 500px;
+      overflow-y: auto;
+      border: 1px solid #e0e0e0;
+    }
+    
+    .loading { color: #666; font-style: italic; }
+    .error { color: #e00; }
+    .success { color: #0a0; }
+    .warning { color: #f80; }
+    .timestamp { color: #666; font-size: 0.875rem; }
+    
+    .log-entry {
+      padding: 1rem;
+      border-bottom: 1px solid #e0e0e0;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+    }
+    .log-entry:last-child { border-bottom: none; }
+    .log-entry:hover { background: #f9f9f9; }
+    
+    .log-time { 
+      font-size: 0.875rem; 
+      color: #666; 
+      min-width: 180px;
+      font-family: 'SF Mono', Monaco, 'Courier New', monospace;
+    }
+    .log-details { flex: 1; margin: 0 1rem; }
+    .log-status {
+      padding: 0.25rem 0.75rem;
+      border-radius: 4px;
+      font-size: 0.875rem;
+      font-weight: 500;
+    }
+    .log-status.success { background: #d4edda; color: #155724; }
+    .log-status.error { background: #f8d7da; color: #721c24; }
+    .log-status.webhook { background: #d1ecf1; color: #0c5460; }
+    
+    .bill-item {
+      padding: 1rem;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      margin-bottom: 1rem;
+      background: #fafafa;
+    }
+    .bill-number { font-weight: bold; color: #0070f3; margin-bottom: 0.5rem; }
+    .bill-title { color: #333; margin-bottom: 0.5rem; }
+    .bill-status { 
+      display: inline-block;
+      padding: 0.25rem 0.75rem;
+      border-radius: 4px;
+      font-size: 0.875rem;
+      margin-right: 0.5rem;
+      font-weight: 500;
+    }
+    .bill-status.active { background: #fff3cd; color: #856404; }
+    .bill-status.passed { background: #d4edda; color: #155724; }
+    .bill-status.failed { background: #f8d7da; color: #721c24; }
+    .bill-status.tabled { background: #e2e3e5; color: #383d41; }
+    
+    .error-item {
+      padding: 1rem;
+      background: #fff3f3;
+      border-left: 4px solid #e00;
+      margin-bottom: 1rem;
+      border-radius: 4px;
+    }
+    .error-time { font-size: 0.875rem; color: #666; margin-bottom: 0.5rem; }
+    .error-message { color: #e00; font-weight: 500; margin-bottom: 0.5rem; }
+    .error-details { font-size: 0.875rem; color: #666; font-family: monospace; }
+    
+    .empty-state {
+      text-align: center;
+      padding: 3rem;
+      color: #999;
+    }
+    
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+      gap: 1.5rem;
+    }
+    
+    @media (max-width: 768px) {
+      .grid-2 { grid-template-columns: 1fr; }
+      .log-entry { flex-direction: column; }
+      .log-time { margin-bottom: 0.5rem; }
+    }
+  </style>
+</head>
 <body>
-<h1>LegiScan Bill Tracker API</h1>
-<p>API endpoint: <a href="/api/test-legiscan">/api/test-legiscan</a></p>
+  <!-- Login Screen -->
+  <div id="login-screen">
+    <div class="login-box">
+      <h2>🔒 Dashboard Login</h2>
+      <form onsubmit="login(event)">
+        <input 
+          type="password" 
+          id="password" 
+          placeholder="Enter dashboard password"
+          autocomplete="current-password"
+          required
+        />
+        <button type="submit" id="loginBtn">Login</button>
+        <div id="loginError" class="login-error"></div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Dashboard (hidden until logged in) -->
+  <div id="dashboard">
+  <div class="container">
+    <h1>🏛️ LegiScan Bill Tracker Dashboard</h1>
+    
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-label">Total Bills</div>
+        <div class="stat-value" id="totalBills">-</div>
+      </div>
+      <div class="stat success">
+        <div class="stat-label">Updated</div>
+        <div class="stat-value" id="updated">-</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Skipped</div>
+        <div class="stat-value" id="skipped">-</div>
+      </div>
+      <div class="stat error">
+        <div class="stat-label">Errors</div>
+        <div class="stat-value" id="errors">-</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">Published</div>
+        <div class="stat-value" id="published">-</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Actions</h2>
+      <button onclick="runSync()" id="syncBtn">🔄 Run Full Sync</button>
+      <button onclick="clearResults()" class="secondary">🗑️ Clear Results</button>
+      <button onclick="clearLogs()" class="danger">🗑️ Clear All Logs</button>
+      <p class="timestamp" id="lastRun"></p>
+    </div>
+
+    <div class="card">
+      <div class="tabs">
+        <button class="tab active" onclick="switchTab('overview')">Overview</button>
+        <button class="tab" onclick="switchTab('bills')">Bill Details</button>
+        <button class="tab" onclick="switchTab('errors')">Errors</button>
+        <button class="tab" onclick="switchTab('webhooks')">Webhook Log</button>
+        <button class="tab" onclick="switchTab('raw')">Raw JSON</button>
+      </div>
+
+      <div id="overview" class="tab-content active">
+        <h3>Last Sync Status</h3>
+        <div id="status"></div>
+        <div id="overview-summary"></div>
+      </div>
+
+      <div id="bills" class="tab-content">
+        <h3>Updated Bills</h3>
+        <div id="bills-list"></div>
+      </div>
+
+      <div id="errors" class="tab-content">
+        <h3>Recent Errors</h3>
+        <div id="errors-list"></div>
+      </div>
+
+      <div id="webhooks" class="tab-content">
+        <h3>Webhook Activity</h3>
+        <div id="webhook-log"></div>
+      </div>
+
+      <div id="raw" class="tab-content">
+        <h3>Raw Response</h3>
+        <pre id="results"></pre>
+      </div>
+    </div>
+  </div>
+  </div>
+  <!-- End Dashboard -->
+
+  <script>
+    let allLogs = [];
+    let isAuthenticated = false;
+
+    // Check if already authenticated
+    window.addEventListener('DOMContentLoaded', () => {
+      const authToken = sessionStorage.getItem('dashboardAuth');
+      if (authToken === 'authenticated') {
+        showDashboard();
+        loadSavedResults();
+        loadWebhookLogs();
+      }
+    });
+
+    async function login(event) {
+      event.preventDefault();
+      
+      const password = document.getElementById('password').value;
+      const loginBtn = document.getElementById('loginBtn');
+      const errorDiv = document.getElementById('loginError');
+      
+      loginBtn.disabled = true;
+      loginBtn.textContent = 'Checking...';
+      errorDiv.textContent = '';
+
+      try {
+        const response = await fetch('/api/auth', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+          sessionStorage.setItem('dashboardAuth', 'authenticated');
+          showDashboard();
+          loadSavedResults();
+          loadWebhookLogs();
+        } else {
+          errorDiv.textContent = 'Incorrect password';
+        }
+      } catch (error) {
+        errorDiv.textContent = 'Connection error. Please try again.';
+      } finally {
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Login';
+        document.getElementById('password').value = '';
+      }
+    }
+
+    function showDashboard() {
+      document.getElementById('login-screen').classList.add('hidden');
+      document.getElementById('dashboard').classList.add('visible');
+      isAuthenticated = true;
+    }
+
+    function switchTab(tabName) {
+      // Update tab buttons
+      document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+      event.target.classList.add('active');
+      
+      // Update tab content
+      document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+      document.getElementById(tabName).classList.add('active');
+    }
+
+    function loadSavedResults() {
+      const saved = localStorage.getItem('lastSyncResult');
+      if (saved) {
+        try {
+          const data = JSON.parse(saved);
+          displayResults(data);
+        } catch (e) {
+          console.error('Failed to load saved results:', e);
+        }
+      }
+    }
+
+    function loadWebhookLogs() {
+      const logs = localStorage.getItem('webhookLogs');
+      if (logs) {
+        try {
+          allLogs = JSON.parse(logs);
+          displayWebhookLogs();
+        } catch (e) {
+          console.error('Failed to load webhook logs:', e);
+        }
+      }
+    }
+
+    function saveLog(data) {
+      const log = {
+        timestamp: data.timestamp || new Date().toISOString(),
+        mode: data.webhookMode ? 'webhook' : 'manual',
+        success: data.success,
+        summary: data.summary,
+        targetItemId: data.targetItemId,
+        errors: data.errors
+      };
+      
+      allLogs.unshift(log);
+      
+      // Keep only last 50 logs
+      if (allLogs.length > 50) {
+        allLogs = allLogs.slice(0, 50);
+      }
+      
+      localStorage.setItem('webhookLogs', JSON.stringify(allLogs));
+      displayWebhookLogs();
+    }
+
+    async function runSync() {
+      const btn = document.getElementById('syncBtn');
+      const status = document.getElementById('status');
+      
+      btn.disabled = true;
+      btn.textContent = '⏳ Running sync...';
+      status.innerHTML = '<p class="loading">Syncing bills from LegiScan...</p>';
+
+      try {
+        const response = await fetch('/api/sync-bills', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        
+        const data = await response.json();
+        
+        // Save results
+        localStorage.setItem('lastSyncResult', JSON.stringify(data));
+        saveLog(data);
+        
+        displayResults(data);
+      } catch (error) {
+        status.innerHTML = `<p class="error">Error: ${error.message}</p>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🔄 Run Full Sync';
+      }
+    }
+
+    function displayResults(data) {
+      const status = document.getElementById('status');
+      const results = document.getElementById('results');
+      const lastRun = document.getElementById('lastRun');
+      
+      // Update stats
+      if (data.summary) {
+        document.getElementById('totalBills').textContent = data.summary.totalBills || 0;
+        document.getElementById('updated').textContent = data.summary.updated || 0;
+        document.getElementById('skipped').textContent = data.summary.skipped || 0;
+        document.getElementById('errors').textContent = data.summary.errors || 0;
+        document.getElementById('published').textContent = data.summary.published || 0;
+      }
+
+      // Update timestamp
+      if (data.timestamp) {
+        const date = new Date(data.timestamp);
+        lastRun.textContent = `Last run: ${date.toLocaleString()}`;
+      }
+
+      // Update status message
+      if (data.success) {
+        const mode = data.webhookMode ? ' (Webhook)' : ' (Manual)';
+        status.innerHTML = `<p class="success">✓ Sync completed successfully${mode}</p>`;
+      } else {
+        status.innerHTML = `<p class="error">✗ Sync failed</p>`;
+      }
+
+      // Display overview
+      displayOverview(data);
+
+      // Display bills
+      displayBills(data.updatedBills || []);
+
+      // Display errors
+      displayErrors(data.errors || [], data.skipReasons || []);
+
+      // Display full results
+      results.textContent = JSON.stringify(data, null, 2);
+    }
+
+    function displayOverview(data) {
+      const container = document.getElementById('overview-summary');
+      
+      if (!data.summary) {
+        container.innerHTML = '<div class="empty-state">No data available</div>';
+        return;
+      }
+
+      let html = '<div style="margin-top: 1rem;">';
+      
+      if (data.summary.updated > 0) {
+        html += `<p class="success">✓ Successfully updated ${data.summary.updated} bill(s)</p>`;
+      }
+      
+      if (data.summary.published > 0) {
+        html += `<p class="success">✓ Published ${data.summary.published} item(s) to live site</p>`;
+      }
+      
+      if (data.summary.skipped > 0) {
+        html += `<p class="warning">⚠ Skipped ${data.summary.skipped} bill(s)</p>`;
+      }
+      
+      if (data.summary.errors > 0) {
+        html += `<p class="error">✗ ${data.summary.errors} error(s) occurred</p>`;
+      }
+      
+      html += '</div>';
+      container.innerHTML = html;
+    }
+
+    function displayBills(bills) {
+      const container = document.getElementById('bills-list');
+      
+      if (!bills || bills.length === 0) {
+        container.innerHTML = '<div class="empty-state">No bills updated in last sync</div>';
+        return;
+      }
+
+      const billItems = bills.filter(b => b.houseNumber || b.senateNumber);
+      
+      if (billItems.length === 0) {
+        container.innerHTML = '<div class="empty-state">No bill details available</div>';
+        return;
+      }
+
+      let html = '';
+      billItems.forEach(bill => {
+        const numbers = [bill.houseNumber, bill.senateNumber].filter(Boolean).join(' / ');
+        
+        html += `<div class="bill-item">`;
+        html += `<div class="bill-number">${numbers || 'Unknown'}</div>`;
+        html += `<div class="bill-title">${bill.headline || 'Untitled'}</div>`;
+        html += `<div>`;
+        
+        if (bill.houseStatus) {
+          html += `<span class="bill-status ${bill.houseStatus.toLowerCase()}">House: ${bill.houseStatus}</span>`;
+        }
+        if (bill.senateStatus) {
+          html += `<span class="bill-status ${bill.senateStatus.toLowerCase()}">Senate: ${bill.senateStatus}</span>`;
+        }
+        
+        html += `</div>`;
+        html += `</div>`;
+      });
+
+      container.innerHTML = html;
+    }
+
+    function displayErrors(errors, skipReasons) {
+      const container = document.getElementById('errors-list');
+      
+      const allErrors = [
+        ...errors.map(e => ({ ...e, type: 'error' })),
+        ...skipReasons.map(s => ({ ...s, type: 'skip' }))
+      ];
+      
+      if (allErrors.length === 0) {
+        container.innerHTML = '<div class="empty-state">✓ No errors or skipped items</div>';
+        return;
+      }
+
+      let html = '';
+      allErrors.forEach(item => {
+        html += `<div class="error-item">`;
+        html += `<div class="error-time">${item.type === 'error' ? '❌ Error' : '⚠️ Skipped'}</div>`;
+        html += `<div class="error-message">${item.error || item.reason || 'Unknown issue'}</div>`;
+        
+        if (item.billId) {
+          html += `<div class="error-details">Bill ID: ${item.billId}</div>`;
+        }
+        if (item.message) {
+          html += `<div class="error-details">${item.message}</div>`;
+        }
+        if (item.details) {
+          html += `<div class="error-details">${JSON.stringify(item.details, null, 2)}</div>`;
+        }
+        
+        html += `</div>`;
+      });
+
+      container.innerHTML = html;
+    }
+
+    function displayWebhookLogs() {
+      const container = document.getElementById('webhook-log');
+      
+      if (allLogs.length === 0) {
+        container.innerHTML = '<div class="empty-state">No webhook activity yet</div>';
+        return;
+      }
+
+      let html = '';
+      allLogs.forEach(log => {
+        const date = new Date(log.timestamp);
+        const status = log.success ? 'success' : 'error';
+        const statusText = log.success ? '✓ Success' : '✗ Failed';
+        const modeClass = log.mode === 'webhook' ? 'webhook' : '';
+        
+        html += `<div class="log-entry">`;
+        html += `<div class="log-time">${date.toLocaleString()}</div>`;
+        html += `<div class="log-details">`;
+        html += `<div><strong>${log.mode === 'webhook' ? '🔔 Webhook' : '🖱️ Manual'}</strong></div>`;
+        
+        if (log.summary) {
+          html += `<div style="margin-top: 0.5rem; font-size: 0.875rem; color: #666;">`;
+          html += `Updated: ${log.summary.updated || 0} | `;
+          html += `Skipped: ${log.summary.skipped || 0} | `;
+          html += `Errors: ${log.summary.errors || 0}`;
+          html += `</div>`;
+        }
+        
+        if (log.targetItemId) {
+          html += `<div style="margin-top: 0.25rem; font-size: 0.875rem; color: #999;">Item: ${log.targetItemId}</div>`;
+        }
+        
+        html += `</div>`;
+        html += `<div class="log-status ${status} ${modeClass}">${statusText}</div>`;
+        html += `</div>`;
+      });
+
+      container.innerHTML = html;
+    }
+
+    function clearResults() {
+      if (confirm('Clear the current sync results?')) {
+        localStorage.removeItem('lastSyncResult');
+        document.getElementById('results').textContent = 'No results to display';
+        document.getElementById('status').textContent = '';
+        document.getElementById('lastRun').textContent = '';
+        document.getElementById('totalBills').textContent = '-';
+        document.getElementById('updated').textContent = '-';
+        document.getElementById('skipped').textContent = '-';
+        document.getElementById('errors').textContent = '-';
+        document.getElementById('published').textContent = '-';
+        document.getElementById('overview-summary').innerHTML = '';
+        document.getElementById('bills-list').innerHTML = '<div class="empty-state">No data</div>';
+        document.getElementById('errors-list').innerHTML = '<div class="empty-state">No data</div>';
+      }
+    }
+
+    function clearLogs() {
+      if (confirm('This will permanently delete all webhook logs. Continue?')) {
+        allLogs = [];
+        localStorage.removeItem('webhookLogs');
+        displayWebhookLogs();
+      }
+    }
+  </script>
 </body>
 </html>
