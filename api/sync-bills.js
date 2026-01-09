@@ -393,11 +393,25 @@ module.exports = async function handler(req, res) {
         return timelineStatus;
       }
 
-      // Use dynamic session status instead of hard-coded cutoff
+      // CRITICAL FIX: If bill is from a previous year and hasn't passed, it's tabled
+      // This handles cases where LegiScan hasn't updated sine_die flags
+      const billYear = legislativeYear ? Number(legislativeYear) : null;
+      const currentYear = new Date().getFullYear();
+      
+      if (billYear && billYear < currentYear && (code === 1 || code === 2 || code === 3)) {
+        decision.finalStatus = "Tabled";
+        decision.reason = `Bill from ${billYear}, current year is ${currentYear}, status code ${code} (not passed) → tabled`;
+        decision.yearCheck = `${billYear} < ${currentYear}`;
+        console.log(`  ${billNum}: Year check (${billYear} < ${currentYear}) + status code ${code} → TABLED`);
+        results.billStatusDecisions.push(decision);
+        return "Tabled";
+      }
+
+      // Use dynamic session status (only matters for current year bills)
       const sessionEnded = await isSessionEnded(state, legislativeYear);
       if (sessionEnded && (code === 1 || code === 2 || code === 3)) {
         decision.finalStatus = "Tabled";
-        decision.reason = `Status code ${code} + session ended`;
+        decision.reason = `Status code ${code} + session ended (via LegiScan)`;
         decision.sessionEnded = true;
         console.log(`  ${billNum}: Status code ${code} + session ended → TABLED`);
         results.billStatusDecisions.push(decision);
@@ -417,9 +431,9 @@ module.exports = async function handler(req, res) {
       }
 
       decision.finalStatus = "Active";
-      decision.reason = `Status code ${code} + session ${sessionEnded ? 'ended but no dead indicators' : 'still active'}`;
+      decision.reason = `Status code ${code} + current year or session active`;
       decision.sessionEnded = sessionEnded;
-      console.log(`  ${billNum}: Status code ${code} + session ${sessionEnded ? 'ended' : 'active'} → ACTIVE`);
+      console.log(`  ${billNum}: Status code ${code} + current year/active session → ACTIVE`);
       results.billStatusDecisions.push(decision);
       return "Active";
     }
