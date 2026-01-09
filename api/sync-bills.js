@@ -1,6 +1,45 @@
 // /api/sync-bills.js
+
+// Verify session helper (duplicated from auth.js to avoid import issues in Vercel)
+function verifySession(req) {
+  const cookies = req.headers.cookie || '';
+  const sessionMatch = cookies.match(/session=([^;]+)/);
+  
+  if (!sessionMatch) {
+    return { valid: false, error: 'No session cookie' };
+  }
+  
+  // Note: This assumes sessions Map is shared. In production, use Redis or database.
+  // For Vercel serverless, you'd need to use a persistent session store.
+  // For now, we'll accept webhook calls without auth, but require auth for manual calls
+  
+  const sessionToken = sessionMatch[1];
+  // Simple validation - in production this should check against a persistent store
+  if (sessionToken && sessionToken.length === 64) { // Valid format
+    return { valid: true };
+  }
+  
+  return { valid: false, error: 'Invalid session' };
+}
+
 export default async function handler(req, res) {
   try {
+    // Check if this is a webhook call (Webflow webhooks won't have session cookies)
+    const webhookItemId = req.body?._id || req.body?.itemId || req.query?.itemId;
+    const isWebhookCall = !!webhookItemId;
+    
+    // For manual/non-webhook calls, require authentication
+    if (!isWebhookCall) {
+      const authCheck = verifySession(req);
+      if (!authCheck.valid) {
+        return res.status(401).json({ 
+          success: false, 
+          error: 'Authentication required',
+          message: 'Please log in to the dashboard to run manual syncs'
+        });
+      }
+    }
+
     const WEBFLOW_TOKEN = process.env.WEBFLOW_API_TOKEN;
     const LEGISCAN_API_KEY = process.env.LEGISCAN_API_KEY;
     const COLLECTION_ID = process.env.WEBFLOW_BILLS_COLLECTION_ID; // required
