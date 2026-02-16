@@ -1,0 +1,28 @@
+name: Scheduled LegiScan Sync
+
+on:
+  schedule:
+    # Run every 6 hours: midnight, 6am, noon, 6pm UTC
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # Allow manual triggers from GitHub Actions UI
+
+jobs:
+  sync-bills:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger bill sync
+        run: |
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json" \
+            "${{ secrets.DEPLOYMENT_URL }}/api/sync-bills")
+
+          echo "Response status: $response"
+
+          if [ "$response" -ge 200 ] && [ "$response" -lt 300 ]; then
+            echo "Sync triggered successfully"
+          else
+            echo "Sync request failed with status $response"
+            exit 1
+          fi

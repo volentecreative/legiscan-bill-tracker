@@ -55,14 +55,21 @@ module.exports = async function handler(req, res) {
     
     // Check if this is a Vercel cron job
     const authHeader = req.headers.authorization;
-    const isCronJob = authHeader === `Bearer ${process.env.CRON_SECRET}`;
-    
+    const cronSecret = process.env.CRON_SECRET;
+
+    // Vercel cron detection:
+    // 1. Primary: Match Authorization header against CRON_SECRET (if set)
+    // 2. Fallback: Check for Vercel's internal cron user-agent header
+    const isCronBySecret = cronSecret && authHeader === `Bearer ${cronSecret}`;
+    const isCronByUserAgent = (req.headers['user-agent'] || '').includes('vercel-cron');
+    const isCronJob = isCronBySecret || isCronByUserAgent;
+
     // For manual calls (not webhook, not cron), require authentication
     if (!isWebhookCall && !isCronJob) {
       const authCheck = verifySession(req);
       if (!authCheck.valid) {
-        return res.status(401).json({ 
-          success: false, 
+        return res.status(401).json({
+          success: false,
           error: 'Authentication required',
           message: 'Please log in to the dashboard to run manual syncs'
         });
@@ -81,6 +88,7 @@ module.exports = async function handler(req, res) {
       timestamp: new Date().toISOString(),
       webhookMode: !!webhookItemId,
       cronMode: isCronJob,
+      cronDetection: isCronJob ? (isCronBySecret ? 'secret' : 'user-agent') : null,
       targetItemId: webhookItemId || null,
       processed: 0,
       updated: 0,
