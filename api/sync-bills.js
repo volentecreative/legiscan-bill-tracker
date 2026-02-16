@@ -541,7 +541,7 @@ module.exports = async function handler(req, res) {
       return rows;
     }
 
-    function buildSponsorsHtml(info, { state = "MN" } = {}) {
+    function buildSponsorsText(info, { state = "MN" } = {}) {
       const list = Array.isArray(info?.sponsors) ? [...info.sponsors] : [];
       if (!list.length) return "";
 
@@ -586,13 +586,12 @@ module.exports = async function handler(req, res) {
         return true;
       });
 
-      return items.map((s, i) => {
+      return items.map((s) => {
         const pref  = prefixFor(s);
-        const name  = s?.name ? esc(s.name) : "";
-        const party = s?.party ? ` (${esc(String(s.party))})` : "";
-        const line  = `${pref} ${name}${party}`.trim();
-        return i < items.length - 1 ? `<p>${line}</p><br>` : `<p>${line}</p>`;
-      }).join("");
+        const name  = s?.name ?? "";
+        const party = s?.party ? ` (${String(s.party)})` : "";
+        return `${pref} ${name}${party}`.trim();
+      }).join("\n");
     }
 
     const createSlug = (text) =>
@@ -738,14 +737,14 @@ module.exports = async function handler(req, res) {
         updateData.fieldData["senate-file-timeline"] = senateNumber ? (senateTimelineHtml || "") : null;
 
         // --- Sponsors (primary + per chamber) -------------------------------------
-        const sponsorsHtml       = buildSponsorsHtml(primaryInfo, { state });
-        const houseSponsorsHtml  = houseInfo  ? buildSponsorsHtml(houseInfo,  { state }) : "";
-        const senateSponsorsHtml = senateInfo ? buildSponsorsHtml(senateInfo, { state }) : "";
+        const sponsorsText       = buildSponsorsText(primaryInfo, { state });
+        const houseSponsorsText  = houseInfo  ? buildSponsorsText(houseInfo,  { state }) : "";
+        const senateSponsorsText = senateInfo ? buildSponsorsText(senateInfo, { state }) : "";
 
         // Write ALL sponsor fields - combined and chamber-specific
-        updateData.fieldData["sponsors"] = sponsorsHtml || "";
-        updateData.fieldData["house-file-sponsors"] = houseNumber ? (houseSponsorsHtml || "") : null;
-        updateData.fieldData["senate-file-sponsors"] = senateNumber ? (senateSponsorsHtml || "") : null;
+        updateData.fieldData["sponsors"] = sponsorsText || "";
+        updateData.fieldData["house-file-sponsors"] = houseNumber ? (houseSponsorsText || "") : null;
+        updateData.fieldData["senate-file-sponsors"] = senateNumber ? (senateSponsorsText || "") : null;
 
         // Links
         if (houseNumber) {
