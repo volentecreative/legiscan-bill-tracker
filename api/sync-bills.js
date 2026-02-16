@@ -591,7 +591,7 @@ module.exports = async function handler(req, res) {
         const name  = s?.name ?? "";
         const party = s?.party ? ` (${String(s.party)})` : "";
         return `${pref} ${name}${party}`.trim();
-      }).join("\n");
+      }).join(", ");
     }
 
     const createSlug = (text) =>
@@ -736,15 +736,12 @@ module.exports = async function handler(req, res) {
         updateData.fieldData["house-file-timeline"]  = houseNumber  ? (houseTimelineHtml  || "") : null;
         updateData.fieldData["senate-file-timeline"] = senateNumber ? (senateTimelineHtml || "") : null;
 
-        // --- Sponsors (primary + per chamber) -------------------------------------
-        const sponsorsText       = buildSponsorsText(primaryInfo, { state });
+        // --- Sponsors (per chamber) ------------------------------------------------
         const houseSponsorsText  = houseInfo  ? buildSponsorsText(houseInfo,  { state }) : "";
         const senateSponsorsText = senateInfo ? buildSponsorsText(senateInfo, { state }) : "";
 
-        // Write ALL sponsor fields - combined and chamber-specific
-        updateData.fieldData["sponsors"] = sponsorsText || "";
-        updateData.fieldData["house-file-sponsors"] = houseNumber ? (houseSponsorsText || "") : null;
-        updateData.fieldData["senate-file-sponsors"] = senateNumber ? (senateSponsorsText || "") : null;
+        updateData.fieldData["house-file-sponsor"]  = houseNumber  ? (houseSponsorsText  || "") : null;
+        updateData.fieldData["senate-file-sponsor"] = senateNumber ? (senateSponsorsText || "") : null;
 
         // Links
         if (houseNumber) {
