@@ -591,7 +591,7 @@ module.exports = async function handler(req, res) {
         const name  = s?.name ?? "";
         const party = s?.party ? ` (${String(s.party)})` : "";
         return `${pref} ${name}${party}`.trim();
-      }).join(", ");
+      }).join("\n");
     }
 
     const createSlug = (text) =>
