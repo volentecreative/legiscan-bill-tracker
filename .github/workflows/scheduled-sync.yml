@@ -2,8 +2,8 @@ name: Scheduled LegiScan Sync
 
 on:
   schedule:
-    # Run every 6 hours: midnight, 6am, noon, 6pm UTC
-    - cron: '0 */6 * * *'
+    # Run once daily at midnight UTC
+    - cron: '0 0 * * *'
   workflow_dispatch: # Allow manual triggers from GitHub Actions UI
 
 jobs:
