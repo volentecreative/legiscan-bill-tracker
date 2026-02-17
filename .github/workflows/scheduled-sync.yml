@@ -12,7 +12,7 @@ jobs:
     steps:
       - name: Trigger bill sync
         run: |
-          response=$(curl -s -o /dev/null -w "%{http_code}" \
+          response=$(curl -s -L -o /dev/null -w "%{http_code}" \
             -X POST \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
             -H "Content-Type: application/json" \
